@@ -24,6 +24,16 @@ class SimDR(nn.Module):
         if pretrained:
             self.backbone.load_state_dict(torch.load(pretrained, map_location='cpu'), strict=False)
 
+    # def forward(self, x: Tensor) -> Tensor:
+    #     out = self.backbone(x)
+    #     # import pdb; pdb.set_trace()
+    #     out = self.final_layer(out).flatten(2)
+    #
+    #     pred_x = self.mlp_head_x(out[0])
+    #     pred_y = self.mlp_head_y(out[1])
+    #     return pred_x, pred_y
+
+    #
     def forward(self, x: Tensor) -> Tensor:
         out = self.backbone(x)
         out = self.final_layer(out).flatten(2)
