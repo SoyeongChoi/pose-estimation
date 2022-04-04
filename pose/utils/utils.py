@@ -31,6 +31,7 @@ def draw_coco_keypoints(img, keypoints, skeletons):
 def draw_keypoints(img, keypoints, skeletons):
     if keypoints == []: return img
     for kpts in keypoints:
+        # import pdb; pdb.set_trace()
         for x, y in kpts:
             cv2.circle(img, (x, y), 4, (255, 0, 0), 2, cv2.LINE_AA)
         for kid1, kid2 in skeletons:

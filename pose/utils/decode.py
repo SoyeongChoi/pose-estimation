@@ -5,12 +5,14 @@ from torch import Tensor
 
 
 def get_simdr_final_preds(pred_x: Tensor, pred_y: Tensor, boxes: Tensor, image_size: tuple):
+    
+    
     center, scale = boxes[:, :2].numpy(), boxes[:, 2:].numpy()
-
+    
     pred_x, pred_y = pred_x.softmax(dim=2), pred_y.softmax(dim=2)
     pred_x, pred_y = pred_x.max(dim=2)[-1], pred_y.max(dim=2)[-1]
     coords = torch.stack([pred_x / 2, pred_y / 2], dim=-1).cpu().numpy()
-
+    # import pdb; pdb.set_trace()
     for i in range(coords.shape[0]):
         coords[i] = transform_preds(coords[i], center[i], scale[i], image_size)
     return coords.astype(int)

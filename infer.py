@@ -15,7 +15,7 @@ from pose.utils.utils import VideoReader, VideoWriter, WebcamStream, FPS
 import sys
 sys.path.insert(0, 'yolov5')
 from yolov5.models.experimental import attempt_load
-
+import onnxruntime as ort
 
 class Pose:
     def __init__(self, 
@@ -29,14 +29,16 @@ class Pose:
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.det_model = attempt_load(det_model, map_location=self.device)
-        self.det_model = self.det_model.to(self.device)
+        self.det_model = ort.InferenceSession(det_model) # attempt_load(det_model, map_location=self.device)
+        # self.det_model = attempt_load(det_model, map_location=self.device)
+        # self.det_model = self.det_model.to(self.device)
 
         self.model_name = pose_model
-        self.pose_model = get_pose_model(pose_model)
-        self.pose_model.load_state_dict(torch.load(pose_model, map_location='cpu'))
-        self.pose_model = self.pose_model.to(self.device)
-        self.pose_model.eval()
+        # self.pose_model = get_pose_model(pose_model)
+        self.pose_model_onnx = ort.InferenceSession('simdir.onnx')# get_pose_model(pose_model)
+        # self.pose_model.load_state_dict(torch.load(pose_model, map_location='cpu'))
+        # self.pose_model = self.pose_model.to(self.device)
+        # self.pose_model.eval()
 
         self.patch_size = (192, 256)
 
@@ -50,11 +52,13 @@ class Pose:
             [7,9],[8,10],[9,11],[2,3],[1,2],[1,3],[2,4],[3,5],[4,6],[5,7]
         ]
 
+
     def preprocess(self, image):
         img = letterbox(image, new_shape=self.img_size)
         img = np.ascontiguousarray(img.transpose((2, 0, 1)))
-        img = torch.from_numpy(img).to(self.device)
-        img = img.float() / 255.0
+        # img = torch.from_numpy(img).to(self.device)
+        img = img.astype(np.float32) / 255.0
+        # img = img.float() / 255.0
         img = img[None]
         return img
 
@@ -77,9 +81,19 @@ class Pose:
             image_patches.append(img_patch)
 
         image_patches = torch.stack(image_patches).to(self.device)
-        return self.pose_model(image_patches)
+        # image_patches = image_patches.detach().cpu().numpy()
+        # import pdb; pdb.set_trace()
+        pred_x = torch.tensor(self.pose_model_onnx.run([self.pose_model_onnx.get_outputs()[0].name], {self.pose_model_onnx.get_inputs()[0].name: image_patches.detach().cpu().numpy()})[0])
+        pred_y = torch.tensor(self.pose_model_onnx.run([self.pose_model_onnx.get_outputs()[1].name], {self.pose_model_onnx.get_inputs()[0].name: image_patches.detach().cpu().numpy()})[0])
+        preds = [x.detach().numpy() for t in [pred_x, pred_y]]
+
+        # return torch.tensor(preds)# self.pose_model(image_patches)
+        # chk2 = self.pose_model(image_patches)
+        # return  self.pose_model(image_patches)
+        return [pred_x, pred_y] # self.pose_model(image_patches)
 
     def postprocess(self, pred, img1, img0):
+        # import pdb; pdb.set_trace()
         pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, classes=0)
 
         for det in pred:
@@ -88,7 +102,7 @@ class Pose:
                 boxes = self.box_to_center_scale(boxes)
                 outputs = self.predict_poses(boxes, img0)
 
-                if 'simdr' in self.model_name:
+                if 'simdr' in self.model_name or 'simdir' in self.model_name:
                     coords = get_simdr_final_preds(*outputs, boxes, self.patch_size)
                 else:
                     coords = get_final_preds(outputs, boxes)
@@ -97,8 +111,11 @@ class Pose:
 
     @torch.no_grad()
     def predict(self, image):
+
         img = self.preprocess(image)
-        pred = self.det_model(img)[0]  
+        # pred = self.det_model(img)[0]
+
+        pred = torch.tensor(self.det_model.run([self.det_model.get_outputs()[0].name], {self.det_model.get_inputs()[0].name: img}))
         self.postprocess(pred, img, image)
         return image
 
@@ -126,6 +143,23 @@ if __name__ == '__main__':
     )
 
     source = Path(args.source)
+    x = torch.randn(1, 3, 256, 192, requires_grad=True)
+    train = False
+    # torch.onnx.export(pose.pose_model, x, 'simdir.onnx', verbose=False, opset_version=13,
+    #                   training=torch.onnx.TrainingMode.TRAINING if train else torch.onnx.TrainingMode.EVAL,
+    #                   do_constant_folding=not train,
+    #                   input_names=['images'],
+    #                   output_names=['output'],
+    #                   dynamic_axes={ 'images': {
+    #                         0: 'batch',
+    #                         2: 'height',
+    #                         3: 'width'},  # shape(1,3,640,640)
+    #                     'output': {
+    #                         0: 'pred_x',
+    #                         1: 'pred_y'}
+    #                   }
+    #                   )
+
 
     if source.is_file() and source.suffix in ['.jpg', '.png']:
         image = cv2.imread(str(source))
