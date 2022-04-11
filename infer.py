@@ -5,7 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 from torchvision import transforms as T
-
+import tensorflow as tf
 from pose.models import get_pose_model
 from pose.utils.boxes import letterbox, scale_boxes, non_max_suppression, xyxy2xywh
 from pose.utils.decode import get_final_preds, get_simdr_final_preds
@@ -18,24 +18,28 @@ from yolov5.models.experimental import attempt_load
 import onnxruntime as ort
 
 class Pose:
-    def __init__(self, 
+    def __init__(self,
         det_model,
         pose_model,
         img_size=640,
         conf_thres=0.25,
-        iou_thres=0.45, 
+        iou_thres=0.45,
     ) -> None:
         self.img_size = img_size
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.det_model = ort.InferenceSession(det_model) # attempt_load(det_model, map_location=self.device)
-        # self.det_model = attempt_load(det_model, map_location=self.device)
-        # self.det_model = self.det_model.to(self.device)
+        # self.det_model = ort.InferenceSession(det_model) # attempt_load(det_model, map_location=self.device)
+        self.det_model = attempt_load(det_model, map_location=self.device)
+        self.det_model = self.det_model.to(self.device)
 
         self.model_name = pose_model
         # self.pose_model = get_pose_model(pose_model)
-        self.pose_model_onnx = ort.InferenceSession('simdir.onnx')# get_pose_model(pose_model)
+        self.pose_model_onnx = ort.InferenceSession('simdr.onnx')# get_pose_model(pose_model)
+        self.pose_model_tflite = tf.lite.Interpreter('simdr.tflite')
+        self.pose_model_tflite.allocate_tensors()
+        self.pose_input_details = self.pose_model_tflite.get_input_details()
+        self.pose_output_details = self.pose_model_tflite.get_output_details()
         # self.pose_model.load_state_dict(torch.load(pose_model, map_location='cpu'))
         # self.pose_model = self.pose_model.to(self.device)
         # self.pose_model.eval()
@@ -56,9 +60,9 @@ class Pose:
     def preprocess(self, image):
         img = letterbox(image, new_shape=self.img_size)
         img = np.ascontiguousarray(img.transpose((2, 0, 1)))
-        # img = torch.from_numpy(img).to(self.device)
-        img = img.astype(np.float32) / 255.0
-        # img = img.float() / 255.0
+        img = torch.from_numpy(img).to(self.device)
+        # img = img.astype(np.float32) / 255.0
+        img = img.float() / 255.0
         img = img[None]
         return img
 
@@ -68,7 +72,7 @@ class Pose:
         mask = boxes[:, 2] > boxes[:, 3] * r
         boxes[mask, 3] = boxes[mask, 2] / r
         boxes[~mask, 2] = boxes[~mask, 3] * r
-        boxes[:, 2:] /= pixel_std 
+        boxes[:, 2:] /= pixel_std
         boxes[:, 2:] *= 1.25
         return boxes
 
@@ -83,14 +87,20 @@ class Pose:
         image_patches = torch.stack(image_patches).to(self.device)
         # image_patches = image_patches.detach().cpu().numpy()
         # import pdb; pdb.set_trace()
-        pred_x = torch.tensor(self.pose_model_onnx.run([self.pose_model_onnx.get_outputs()[0].name], {self.pose_model_onnx.get_inputs()[0].name: image_patches.detach().cpu().numpy()})[0])
-        pred_y = torch.tensor(self.pose_model_onnx.run([self.pose_model_onnx.get_outputs()[1].name], {self.pose_model_onnx.get_inputs()[0].name: image_patches.detach().cpu().numpy()})[0])
-        preds = [x.detach().numpy() for t in [pred_x, pred_y]]
+        self.pose_model_tflite.set_tensor(self.pose_input_details[0]['index'], image_patches.detach().cpu().numpy())
+        self.pose_model_tflite.invoke()
+
+        pred_x = self.pose_model_tflite.get_tensor(self.pose_output_details[0]['index'])
+        pred_y = self.pose_model_tflite.get_tensor(self.pose_output_details[1]['index'])
+            
+        # pred_x = torch.tensor(self.pose_model_onnx.run([self.pose_model_onnx.get_outputs()[0].name], {self.pose_model_onnx.get_inputs()[0].name: image_patches.detach().cpu().numpy()})[0])
+        # pred_y = torch.tensor(self.pose_model_onnx.run([self.pose_model_onnx.get_outputs()[1].name], {self.pose_model_onnx.get_inputs()[0].name: image_patches.detach().cpu().numpy()})[0])
+        # preds = [x.detach().numpy() for t in [pred_x, pred_y]]
 
         # return torch.tensor(preds)# self.pose_model(image_patches)
         # chk2 = self.pose_model(image_patches)
         # return  self.pose_model(image_patches)
-        return [pred_x, pred_y] # self.pose_model(image_patches)
+        return [torch.tensor(pred_x), torch.tensor(pred_y)] # self.pose_model(image_patches)
 
     def postprocess(self, pred, img1, img0):
         # import pdb; pdb.set_trace()
@@ -113,9 +123,9 @@ class Pose:
     def predict(self, image):
 
         img = self.preprocess(image)
-        # pred = self.det_model(img)[0]
+        pred = self.det_model(img)[0]
 
-        pred = torch.tensor(self.det_model.run([self.det_model.get_outputs()[0].name], {self.det_model.get_inputs()[0].name: img}))
+        # pred = torch.tensor(self.det_model.run([self.det_model.get_outputs()[0].name], {self.det_model.get_inputs()[0].name: img}))
         self.postprocess(pred, img, image)
         return image
 
@@ -185,7 +195,7 @@ if __name__ == '__main__':
             output = pose.predict(frame.numpy())
             fps.stop(False)
             writer.update(output)
-        
+
         print(f"FPS: {fps.fps}")
         writer.write()
 
